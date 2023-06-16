@@ -1,0 +1,529 @@
+---
+title: "iDC analysis for ephys paper"
+author: "Felix Aplin"
+date: "2023-01-25"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Somatosensory spinal cord neuronal responses and effects of iDC neuromodulation
+
+The purpose of this experiment was to develop a method by which different types of peripheral somatosensory responses could be recorded, and to compare these responses against varying levels of iDC neuromodulation. The hypothesis was that responses to 'tactile' and 'proprioceptive' stimuli (shaker and motor) would not see reduced activity with iDC, but responses to 'nociceptive' stimuli (laser and noxious pinch) would see reduced activity. It was also hypothesised that DC amplitude and polarity would influence the level of iDC neuromodulation. 
+
+Recordings were obtained using a 32 electrode neuronexus shank inserted into T13 or L1 of the rat spinal cord. Responses were collected from 5 different stimulus modalities (electrical stimulation, shaker, motor, laser, noxious pinch). iDC block was then applied and the responses recording before, during, and after block.
+
+Furthermore, recordings were taken across two sexes (M/F) and three conditions (control, CFA injection and SNT injury). It was hypothesised that differences in iDC neuromodulation would vary between treatment condition but not between sex.
+
+### variables: 
+
+The datafile is a .csv file with output from one recording as one row. It contains the following columns as data headings:
+
+    
+#### Data Headings:
+
+    neuron_ID = unique cell identifier containing the animal, location, channels, assignment, and cell descriptor 
+    
+    animal_ID	= animal ID of the experiment
+    
+    treatment	sex	= M or F
+    
+    position = Electrode position (1 - x)
+    
+    channels = 	Analysed channels (always sets of 3 with values betwee 1-32)
+    
+    cell_desc	= Descriptor which contains templated response type and recording index ("cell number")
+    
+    assignment = Which templated assignment the recording corresponds to
+    
+    cell_type	= The templated response type (e.g. Tactile, Proprioceptive, etc)
+    
+    stim_type	= The stimulation used in the recording (e.g. motor, shaker etc)
+    
+    stim_code	= Code identifier for the type of stimulation; should match stim_type
+    
+    stim_amp	= Catch-all used to identify the amplitude of the stim: values depend on the stim type
+    
+    idc_amp	= Amplitude of iDC; positive is anodic centre, negative is cathodic centre. 0 means it is a control
+    
+    recovery_time	= For controls; how long after the most recent iDC trial had been completed
+    
+    exp_phase	= Whether the recording is before iDC, during iDC, or during iDC recovery
+    
+    is_good_assign	= TRUE if assignment passed templating criteria (e.g. ISI test and had enough responses)
+    
+    WOI1 = Window of interest for the prestimulus window, in ms
+    
+    WOI2 = Window of interest for the poststimulus window
+    
+    spikes_count_pre = spike count from WOI1 (the 'baseline' activity)
+    
+    spikes_count_post	= spike count from WOI2 (the 'evoked' activity)
+    
+    trials_count	= number of trials the counts are derived from
+    
+    recording_time = the time of recording, in seconds
+    
+    template_time	= the time of templating, in seconds. If this is the same as the recording time, that means this recording is the template.
+    
+    delta_t	= amount of time that has elapsed since templating. If this is 0, as above.
+    
+    recording_filenames	= filenames that were used to extract this data
+    
+    recording_files_num	= the filenumbers used to extract this data
+    
+    template_filenames	= filenames used for templating this data
+    
+    template_files_num = filenumbers used for templating this data.=
+
+
+
+#### key variables of interest:
+
+* Neuron ID: this identifies neurons and becomes a random factor for multiple comparisons 
+
+* cell_type: Used to determine what was used for the initial templating (i.e. what kind of activity are we looking at here), and a fixed effect
+    
+* stim_type: The stimulation used in the recording - if different, this is is a cross-comparison.
+
+* WOI_1 and WOI2 = These are the dependent variables for baseline (spontaneous) rate and the evoked response.
+
+##### data preparation pipeline: 
+
+TBD
+
+
+### initial setup:
+
+Run the following block to clear the workspace and import the relevant packages. Add more as necessary. You may not need many of these packages for this script but doesn't hurt to include them. 
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+rm(list = ls()) # this empties the workspace
+# source('summarySE.R') # contains plyr
+library(ggplot2)
+library(dplyr)
+library(ggpubr) # for ggarange
+library(relaimpo) # for calc.relimp
+library(car) # needed fro qqp
+library(sjPlot) # needed for plot_model
+library(rsample) # required for spitting data into training and testing
+library(plotly)
+library(see)
+library(patchwork)
+library(Hmisc)
+library(lmerTest)
+library(emmeans)
+library(ordinal)
+library(ggeffects)
+library(sjmisc)
+library(rstatix) # for effect size: anova_test(), values ges or pes
+library(simr)
+library(data.table)
+library(BSDA)
+
+
+pd = 0.2 # this is for plotting, it just defines the "position dodge"
+
+
+#+++++++++++++++++++++++++
+# Function to calculate the mean and the standard deviation
+  # for each group
+#+++++++++++++++++++++++++
+# data : a data frame
+# varname : the name of a column containing the variable to be summariezed
+# groupnames : vector of column names to be used as  grouping variables
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+
+mypw.emmc = function(..., sigma = 1) {
+  result = emmeans:::pairwise.emmc (...)
+  for (i in seq_along(result[1, ]))
+    result[[i]] = result[[i]] / sigma
+  result
+}
+
+```
+
+### Import data:
+
+The following imports the data and refines the selection of data to collect only what you want.
+
+
+```{r}
+
+iDC_data <- read.csv("fullResults 2023-03-13.csv") # this makes a dataframe (df). You call the columns as follows: df$column_name. 
+
+
+# make additional columns:
+iDC_data$net_response <- (iDC_data$spikes_count_post - iDC_data$spikes_count_pre) #the evoked response minus the baseline
+
+# log response
+iDC_data$log_spikes_count_post <- (log10(1+iDC_data$spikes_count_post))
+iDC_data$log_spikes_count_pre <- (log10(1+iDC_data$spikes_count_pre))
+
+### From here we now start to constrain a set for analysis of the iDC
+# only identified as single units
+iDC_data <- subset(iDC_data, iDC_data$is_good_assign == "true" )
+
+
+#standardise naming for easy removal of non-matching sets
+iDC_data<- iDC_data %>% mutate(cell_type = if_else(iDC_data$cell_type ==  "tactile",  "shaker", 
+                                             if_else(iDC_data$cell_type ==  "prop",  "motor",
+                                             if_else(iDC_data$cell_type ==  "thermal",  "laser", 
+                                             if_else(iDC_data$cell_type ==  "pinch",  "pinch", "ERROR")))))
+
+# now let's remove cells from the dataset that aren't evoked
+
+#first test whether there is an evoked response
+ttest <- tsum.test(iDC_data$spikes_count_pre, iDC_data$spikes_std_pre, iDC_data$trials_count,iDC_data$spikes_count_post, iDC_data$spikes_std_post, iDC_data$trials_count)[3]
+ttest <- unlist(ttest)
+iDC_data$t_test <- ttest
+
+#Make a control only (no iDC) set
+iDC_datacontrol <- subset(iDC_data, iDC_data$exp_phase == "control")
+#constrain to only templates
+iDC_datacontrol <- (subset(iDC_datacontrol, iDC_datacontrol$recording_filenames == iDC_datacontrol$template_filenames))
+#create a list of recordings that passed the evoked critera
+iDC_datacontrol <- (subset(iDC_datacontrol, iDC_datacontrol$t_test < 0.05 & iDC_datacontrol$net_response > 0))
+
+#Make a new column we can use as the 'evoked' criteria
+
+iDC_data <- iDC_data %>% mutate(evoked = if_else(iDC_data$neuron_ID %in% iDC_datacontrol$neuron_ID, TRUE, FALSE))
+
+#remove all data from the main set that uses templates that have failed this criteria
+#iDC_data <- subset(iDC_data, iDC_data$neuron_ID %in% iDC_datacontrol$neuron_ID)
+
+# We also have to remove other cells that are actually tactile cells.
+# Make a list of tactile crossmodal cell neuron IDs
+
+iDC_multimodal <- subset(iDC_data, iDC_data$exp_phase == "control")
+
+iDC_multimodal <- subset(iDC_multimodal, (iDC_multimodal$cell_type == "pinch" & iDC_multimodal$stim_type == "shaker") | (iDC_multimodal$cell_type == "laser" & iDC_multimodal$stim_type == "shaker") | (iDC_multimodal$cell_type == "prop" & iDC_multimodal$stim_type == "shaker"))
+
+#count(iDC_multimodal)
+# For each of them, see if there's a comparison where test_stim_type is shaker and it passed the evoked criteria
+iDC_multimodal <- subset(iDC_multimodal, iDC_multimodal$t_test < 0.05 & iDC_multimodal$net_response > 0)
+#count(iDC_multimodal)
+# Get a new list of neuron IDs and remove those from the data
+iDC_data <- subset(iDC_data, ! iDC_data$neuron_ID %in% iDC_multimodal$neuron_ID)
+#count(iDC_multiremoval)
+
+
+# make a iDC stim amp and recovery time as ordered factor
+#unique(iDC_comparison$test_idc_intensity)
+#iDC_comparison$idc_amp <- factor(iDC_comparison$test_idc_intensity, levels = c( 0, 500, 1000, -500, -1000))
+#unique(iDC_comparison$idc_amp)
+#levels (iDC_comparison$idc_amp)
+
+```
+
+
+# 1.0 Quantitative cell type analysis
+
+Aim: this analysis aims to examine the non-iDC responses to get a picture of the size and quality of the dataset. It plots each response type (testmean1 vs testmean2) for "control control" to demonstrate the population of cells that were captured using this method, with each of the stim types. It shows mismatched templating to demonstrate that the responses are (somewhat) constrained between stim types.
+
+It then applies a set of constraints that define a cell as 'responding'. There are two criteria:
+
+1) A t-test of the means/standard deviations of the response must pass a criteria of 0.05. This was reduced from 0.1 previously as false negatives are not a significant issue with 0.05 and with 0.1 we were picking up too many spontaneous responses passing as evoked
+
+2) The evoked response must average at least 1 spike per trial more than background. This is to eliminate false positives occuring from very low number of spikes (e.g. a single spike in the entire trialset but it happens to fall in the stim window, so gets counted as significant) and to eliminate cells where there were fewer responses in the evoked response than background.
+
+to do:
+
+1) How many total assignments generated a response? How many of those were evoked responses (% yield)?
+
+## 1.1 Plot of total assignments and assignments selected for further analysis
+
+First we want to know how many unique cells of each type we have.
+
+Total number:
+```{r}
+length((unique(iDC_data$neuron_ID)))
+```
+<br/><br/>
+Proprioceptive cells:
+```{r}
+count_data <- subset(iDC_data, iDC_data$cell_type == "motor" )
+length((unique(count_data$neuron_ID)))
+```
+<br/><br/>
+Tactile cells:
+```{r}
+count_data <- subset(iDC_data, iDC_data$cell_type == "shaker" )
+length((unique(count_data$neuron_ID)))
+```
+<br/><br/>
+Laser cells:
+```{r}
+count_data <- subset(iDC_data, iDC_data$cell_type == "laser" )
+length((unique(count_data$neuron_ID)))
+```
+<br/><br/>
+Pinch cells:
+```{r}
+count_data <- subset(iDC_data, iDC_data$cell_type == "pinch" )
+length((unique(count_data$neuron_ID)))
+```
+
+```{r}
+dataset <- iDC_datacontrol # "control-control" data
+table(dataset$cell_type)
+
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#CC79A7", "#0072B2", "#D55E00", "#F0E442", "#999999")
+
+netresp_perstim1 <- ggplot(data =dataset, mapping = aes(x = cell_type, y = (net_response/trials_count), colour = cell_type)) + 
+                        geom_point(position=position_jitterdodge(dodge.width= .9, jitter.width = 0.5), alpha = 0.5) +
+                        geom_boxplot(fill = "white", alpha = .3, width = 0.5, lwd = 0.5, position = position_dodge(width = .9, preserve = "total")) +
+                        scale_size(range = c(1.25, 5)) +
+                        facet_grid(. ~ stim_type) +
+                        scale_colour_manual(values = cbPalette) +
+                        theme(axis.ticks.x = element_blank(), axis.text.x=element_blank(), plot.title = element_text(hjust = 0.5)) +
+                        # stat_summary(fun = "mean", geom = "point", aes(group = test_cell_type), colour = "black", size = 1, position = position_dodge(1)) +
+                        # stat_summary(fun.data = mean_se, geom = "errorbar") +
+                        ggtitle("All responses") + 
+                        labs(colour = "Cell type") +
+                        ylab("Net response (spikes per trial)")
+
+netresp_perstim1       
+
+```
+
+
+# 2.0 Effects of iDC 
+
+The aim of this analysis is to examine the effects of iDC neuromodulation on evoked neuronal activity, and to separate out its effects based on response type and iDC intensity. This section also examines whether there is a relationship between the amount of time left to recover, and the level of responding neural activity.
+
+In this analysis, each stimulation type is separated as the dependent variable isn't identical between stim type (e.g. spike rate). We will use iDC_comparison as the dataset for this section.
+
+
+## 2.1 Statistical analysis of response as a factor of iDC
+
+Constrain dataset
+```{r}
+
+iDC_comparison <- iDC_data
+
+#remove all non-matching sets, so that comparisons are being made only on matching sets
+iDC_comparison <- (subset(iDC_comparison, iDC_comparison$cell_type == iDC_comparison$stim_type))
+
+
+#remove all recovery sets that don't respond
+iDC_comparison <- (subset(iDC_comparison, iDC_comparison$exp_phase != "recovery"))
+
+#transform recov into controls
+#iDC_comparison <- iDC_comparison %>% mutate(exp_phase = if_else(iDC_comparison$exp_phase ==  "recovery", "control", 
+#                                                        if_else(iDC_comparison$exp_phase ==  "control", "control", "iDC")))
+
+#remove iDC values which are not 500 or 1000
+iDC_comparison <- subset(iDC_comparison, abs(iDC_comparison$idc_amp) == 500 | abs(iDC_comparison$idc_amp) == 1000 | abs(iDC_comparison$idc_amp) == 0)
+
+#make a cathodic and anodic iDC factor
+
+iDC_comparison$polarity <- ifelse(iDC_comparison$idc_amp > 0, "Anodic",
+                           ifelse(iDC_comparison$idc_amp < 0, "Cathodic", "Control"))
+
+#standardise iDC amplitudes
+
+iDC_comparison$idc_amp <- abs(iDC_comparison$idc_amp)
+  
+iDC_comparison$idc_amp <- factor(iDC_comparison$idc_amp, levels = c( 0, 500, 1000))
+unique(iDC_comparison$idc_amp)
+levels (iDC_comparison$idc_amp)
+
+evoked_data <- subset(iDC_comparison, iDC_comparison$idc_amp != 500)
+write.csv(evoked_data, "evoked_data.csv")
+```
+
+Tactile statistics
+```{r}
+
+#constrain to only tactile
+dataset <- subset(iDC_comparison, iDC_comparison$cell_type == "shaker")
+
+#big combined model to examine and account for all the factors
+
+tactile_mod2 <- lmer(spikes_count_post ~ exp_phase * treatment * evoked + sex + idc_amp + delta_t + spikes_count_pre + (1|animal_ID/neuron_ID),  data = dataset)
+
+plot(tactile_mod2)
+shapiro.test(resid(tactile_mod2))
+x<-resid(tactile_mod2) 
+hist(x)
+qqp(x) # requires the car package
+
+
+anova(tactile_mod2)
+#emmeans(tactile_mod2, pairwise ~polarity|treatment|evoked)
+emmeans(tactile_mod2, pairwise ~idc_amp|treatment|evoked)
+#emmeans(tactile_mod2, pairwise ~treatment|idc_amp|evoked)
+#emmeans(tactile_mod2, mypw ~ idc_amp|treatment|evoked, sigma = 18.41, name = "effect.size")
+
+```
+
+Proprioceptive statistics
+```{r}
+#constrain to only proprio
+dataset <- subset(iDC_comparison, iDC_comparison$cell_type == "motor")
+
+#big combined model to examine and account for all the factors
+
+prop_mod2 <- lmer(spikes_count_post ~ exp_phase * treatment * evoked + sex + idc_amp + delta_t + spikes_count_pre + (1|animal_ID/neuron_ID),  data = dataset)
+
+plot(prop_mod2)
+shapiro.test(resid(prop_mod2))
+x<-resid(prop_mod2) 
+hist(x)
+qqp(x) # requires the car package
+
+
+anova(prop_mod2)
+#emmeans(prop_mod2, pairwise ~polarity|treatment|evoked)
+emmeans(prop_mod2, pairwise ~idc_amp|treatment|evoked)
+#emmeans(prop_mod2, pairwise ~treatment|idc_amp|evoked)
+#emmeans(prop_mod2, mypw ~ idc_amp|treatment|evoked, sigma = 56.33, name = "effect.size")
+
+```
+
+Pinch statistics
+```{r}
+#constrain to only pinch
+dataset <- subset(iDC_comparison, iDC_comparison$cell_type == "pinch")
+
+#big combined model to examine and account for all the factors
+
+pinch_mod2 <- lmer(spikes_count_post ~ exp_phase * treatment * evoked + sex + idc_amp + delta_t + spikes_count_pre + (1|animal_ID/neuron_ID),  data = dataset)
+
+plot(pinch_mod2)
+shapiro.test(resid(pinch_mod2))
+x<-resid(pinch_mod2) 
+hist(x)
+qqp(x) # requires the car package
+
+
+anova(pinch_mod2)
+#emmeans(pinch_mod2, pairwise ~polarity|treatment|evoked)
+emmeans(pinch_mod2, pairwise ~idc_amp|treatment|evoked)
+#emmeans(pinch_mod2, pairwise ~treatment|idc_amp|evoked)
+#emmeans(pinch_mod2, mypw ~ idc_amp|treatment|evoked, sigma = 52.67, name = "effect.size")
+     
+
+```
+
+Laser statistics
+```{r}
+#constrain to only laser
+dataset <- subset(iDC_comparison, iDC_comparison$cell_type == "laser")
+
+#big combined model to examine and account for all the factors
+
+laser_mod2 <- lmer(spikes_count_post ~ exp_phase * treatment * evoked + sex + idc_amp + delta_t + spikes_count_pre + (1|animal_ID/neuron_ID),  data = dataset)
+
+plot(laser_mod2)
+shapiro.test(resid(laser_mod2))
+x<-resid(laser_mod2) 
+hist(x)
+qqp(x) # requires the car package
+
+
+anova(laser_mod2)
+#emmeans(laser_mod2, pairwise ~polarity|treatment|evoked)
+emmeans(laser_mod2, pairwise ~idc_amp|treatment|evoked)
+#emmeans(laser_mod2, pairwise ~treatment|idc_amp|evoked)
+#emmeans(mod2, pairwise ~treatment|exp_phase|evoked)
+#emmeans(laser_mod2, mypw ~ idc_amp|treatment|evoked, sigma = 8.781, name = "effect.size")
+
+```
+
+## 2.2 Average time for cells to recover that were blocked
+```{r}
+iDC_recovery <- iDC_data
+
+#make a list of iDCs where there is no response when iDC is on
+iDC_block <- subset(iDC_data, iDC_data$exp_phase == "idc")
+
+iDC_block <- subset(iDC_block, iDC_block$t_test > 0.05)
+
+# Get the list of neuron IDs and subset to only those that match
+
+iDC_recovery <- subset(iDC_data, iDC_data$neuron_ID %in% iDC_block$neuron_ID)
+
+
+#filter to create a set which is only the recovery
+iDC_recovery <- subset(iDC_recovery, iDC_recovery$exp_phase == "recovery")
+
+iDC_recovery <- subset(iDC_recovery, iDC_recovery$stim_type != "spon")
+
+iDC_recovery <- subset(iDC_recovery, iDC_recovery$t_test < 0.05)
+
+iDC_recovery <- subset(iDC_recovery, iDC_recovery$evoked == TRUE)
+
+idc_recov_ther <- subset(iDC_recovery, iDC_recovery$cell_type == "laser")
+unique(idc_recov_ther$neuron_ID)
+
+idc_recov_pres <- subset(iDC_recovery, iDC_recovery$cell_type == "pinch")
+unique(idc_recov_pres$neuron_ID)
+
+idc_recov_tact <- subset(iDC_recovery, iDC_recovery$cell_type == "shaker")
+unique(idc_recov_tact$neuron_ID)
+
+idc_recov_prop <- subset(iDC_recovery, iDC_recovery$cell_type == "motor")
+unique(idc_recov_prop$neuron_ID)
+
+iDC_recovery <- iDC_recovery %>%
+                group_by(neuron_ID) %>% 
+                top_n(-1, abs(recovery_time))
+
+timetorecovcolour <- ggplot(data =iDC_recovery, mapping = aes(x = stim_type, y = recovery_time, colour = stim_type)) + 
+                        geom_point(position=position_jitterdodge(dodge.width= 0.9, jitter.width = 0.5), alpha = 0.5) +
+                        geom_boxplot(fill = "white", alpha = .3, width = 0.5, lwd = 0.5, position = position_dodge(width = .9, preserve = "total")) +
+                        scale_size(range = c(1.25, 5)) +
+                        scale_colour_manual(values = cbPalette) +
+                        theme(plot.title = element_text(hjust = 0.5)) +
+                        #stat_summary(fun = "mean", geom = "point", aes(group = test_cell_type), colour = "black", size = 1, position = position_dodge(1)) +
+                         # stat_summary(fun.data = mean_se, geom = "errorbar") +
+                        ggtitle("Recovery from iDC block") +
+                        labs(size = "iDC amplitude (μA)", colour = "Stimulus") +
+                        ylab("Recovery time (min)") + 
+                        xlab("Stimulus")
+
+timetorecovcolour 
+
+#mod <- lmer(recovery_time ~ stim_type + (1|animal_ID),  data = iDC_recovery)
+
+#plot(mod)
+#shapiro.test(resid(mod))
+#x<-resid(mod)
+#hist(x)
+#qqp(x) # requires the car package
+
+
+#anova(mod)
+#emmeans(mod, pairwise ~stim_type)
+
+kruskal.test(recovery_time ~ stim_type, data = iDC_recovery)
+pairwise.wilcox.test(iDC_recovery$recovery_time, iDC_recovery$stim_type,
+                 p.adjust.method = "BH")
+
+
+#plot_model(mod, type = "pred", terms = c("idc_amp_polar_cat", "test_stim_type"))
+
+```
