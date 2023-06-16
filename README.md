@@ -3,9 +3,8 @@ Data and code repository for Su et al. 2023
 Copyright (C) 2023  Aplinlab
 
 This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+it under the terms of the GNU General Public License v3.0 as published by
+the Free Software Foundation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -17,7 +16,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 Email: f.aplin@unsw.edu.au
 
-# Code Pipeline
+# Main Pipeline
 ## loading
 Use to load raw data into a JLD2 format.
 
